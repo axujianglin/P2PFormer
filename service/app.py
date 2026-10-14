@@ -113,12 +113,39 @@ def _decode_image(data: bytes, filename: str) -> np.ndarray:
                     "The uploaded file is not a supported image",
                 )
             source.load()
-            rgb = source.convert("RGB")
-            # MMDetection's ndarray path expects OpenCV-style BGR input.
-            return np.asarray(rgb, dtype=np.uint8)[:, :, ::-1].copy()
+
+            # Production inference already depends on MMCV. Decode the upload
+            # exactly like MMDetection's LoadImageFromFile so TIFF bit depth,
+            # photometric interpretation and channel conversion cannot differ
+            # between file-based inference and HTTP inference.
+            try:
+                import mmcv
+            except ModuleNotFoundError:
+                # Keep protocol-only unit tests usable without the heavyweight
+                # model stack. A runnable P2PFormer installation always has
+                # MMCV because init_detector depends on it.
+                rgb = source.convert("RGB")
+                return np.asarray(rgb, dtype=np.uint8)[:, :, ::-1].copy()
+
+        image_bgr = mmcv.imfrombytes(
+            data, flag="color", channel_order="bgr"
+        )
+        if (
+            image_bgr is None
+            or not isinstance(image_bgr, np.ndarray)
+            or image_bgr.ndim != 3
+            or image_bgr.shape[2] != 3
+        ):
+            raise ValueError("MMCV returned an invalid decoded image")
+        return np.ascontiguousarray(image_bgr)
     except ServiceError:
         raise
     except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise ServiceError(
+            400, "invalid_image", "The uploaded image could not be decoded"
+        ) from exc
+    except Exception as exc:
+        # Decoder backends may raise backend-specific exception classes.
         raise ServiceError(
             400, "invalid_image", "The uploaded image could not be decoded"
         ) from exc

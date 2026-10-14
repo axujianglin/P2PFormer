@@ -1,12 +1,15 @@
 """Protocol-level tests that never load a real P2PFormer checkpoint."""
 
+import sys
 from io import BytesIO
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from service.app import create_app
+from service.app import _decode_image, create_app
 from service.config import ServiceSettings
 from service.predictor import PredictedPolygon, restore_polygon_to_original
 
@@ -151,6 +154,28 @@ def test_supported_upload_formats_preserve_original_size(
     assert response.json()["image"]["width"] == 37
     assert response.json()["image"]["height"] == 23
     assert response.json()["image"]["file_name"] == filename
+
+
+def test_upload_decode_uses_mmdetection_mmcv_path(monkeypatch):
+    expected = np.full((7, 11, 3), 23, dtype=np.uint8)
+    calls = {}
+
+    def imfrombytes(data, flag, channel_order):
+        calls.update(data=data, flag=flag, channel_order=channel_order)
+        return expected
+
+    monkeypatch.setitem(
+        sys.modules, "mmcv", SimpleNamespace(imfrombytes=imfrombytes)
+    )
+    encoded = image_bytes("TIFF", (11, 7))
+    decoded = _decode_image(encoded, "image.tiff")
+
+    assert decoded is expected
+    assert calls == {
+        "data": encoded,
+        "flag": "color",
+        "channel_order": "bgr",
+    }
 
 
 @pytest.mark.parametrize("threshold", ["0", "1", "0.0", "1.0"])
