@@ -161,6 +161,10 @@ class P2PFormerPredictor:
 
         if "contours" not in captured:
             # The model bypasses polygon construction when no boxes exist.
+            LOGGER.info(
+                "Inference result summary: raw=0 accepted=0 "
+                "(the detector produced no boxes)"
+            )
             return []
 
         height, width = image_bgr.shape[:2]
@@ -174,12 +178,18 @@ class P2PFormerPredictor:
             raise RuntimeError("P2PFormer returned misaligned polygons and boxes")
 
         predictions = []
+        invalid_score_count = 0
+        below_threshold_count = 0
         invalid_polygon_count = 0
+        finite_scores = []
         for polygon, bbox in zip(polygons, bboxes):
             score = float(bbox[4])
             if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+                invalid_score_count += 1
                 continue
+            finite_scores.append(score)
             if score < score_threshold:
+                below_threshold_count += 1
                 continue
             points = restore_polygon_to_original(
                 polygon,
@@ -197,6 +207,37 @@ class P2PFormerPredictor:
                     points=points, score=score, score_cls=score
                 )
             )
+        image_height, image_width = image_meta["img_shape"][:2]
+        scale_factor = np.asarray(
+            image_meta["scale_factor"], dtype=np.float64
+        ).reshape(-1)
+        width_scale = float(scale_factor[0])
+        height_scale = float(
+            scale_factor[0] if scale_factor.size == 1 else scale_factor[1]
+        )
+        score_range = (
+            "none" if not finite_scores else
+            f"{min(finite_scores):.6f}..{max(finite_scores):.6f}"
+        )
+        LOGGER.info(
+            "Inference result summary: raw=%d accepted=%d "
+            "below_threshold=%d invalid_score=%d invalid_polygon=%d "
+            "threshold=%.6f score_range=%s original_size=%dx%d "
+            "model_image_size=%dx%d scale=(%.6f,%.6f)",
+            len(polygons),
+            len(predictions),
+            below_threshold_count,
+            invalid_score_count,
+            invalid_polygon_count,
+            score_threshold,
+            score_range,
+            width,
+            height,
+            image_width,
+            image_height,
+            width_scale,
+            height_scale,
+        )
         if invalid_polygon_count:
             LOGGER.warning(
                 "Skipped %d invalid or out-of-bounds polygon(s) out of %d",

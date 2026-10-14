@@ -349,6 +349,15 @@ def create_app(
             polygons = _build_polygons(
                 predictions, width, height, settings.model_name
             )
+            LOGGER.info(
+                "Inference completed for request %r: polygons=%d "
+                "threshold=%.6f image_size=%dx%d",
+                x_request_id,
+                len(polygons),
+                score_threshold,
+                width,
+                height,
+            )
         except ServiceError:
             raise
         except Exception:
