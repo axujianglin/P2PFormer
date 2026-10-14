@@ -1,0 +1,5 @@
+-r service.txt
+numpy>=1.23.5,<2.0
+httpx>=0.24,<0.29
+pytest>=7.0,<9.0
+
