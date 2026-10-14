@@ -1,5 +1,6 @@
 """Adapter around the repository's existing single-image inference path."""
 
+import logging
 import math
 from dataclasses import dataclass
 from types import MethodType
@@ -8,6 +9,8 @@ from typing import Any, Dict, List, Sequence, Tuple
 import numpy as np
 
 from .config import ServiceSettings
+
+LOGGER = logging.getLogger("p2pformer.service.predictor")
 
 
 @dataclass
@@ -22,6 +25,8 @@ def restore_polygon_to_original(
     image_meta: Dict[str, Any],
     original_width: int,
     original_height: int,
+    bbox_xyxy: Sequence[float] = (),
+    roi_expand_scale: float = 1.0,
 ) -> List[List[float]]:
     """Undo MMDetection flip and resize for a polygon.
 
@@ -54,14 +59,27 @@ def restore_polygon_to_original(
     array[:, 0] /= width_scale
     array[:, 1] /= height_scale
 
-    tolerance = 1.0
+    # Line points are sigmoid-bounded inside an RoI enlarged by
+    # ``line_head.expand_scale`` (1.1 in the supplied configs). A detection
+    # touching an image edge can therefore legitimately produce a point just
+    # outside the image. Permit only that architecture-defined margin plus a
+    # small resize-rounding allowance; reject larger excursions so clipping
+    # cannot conceal a bad coordinate transform.
+    tolerance_x = 1.0
+    tolerance_y = 1.0
+    if len(bbox_xyxy) >= 4:
+        bbox = np.asarray(bbox_xyxy[:4], dtype=np.float64)
+        if np.isfinite(bbox).all():
+            expansion = max(0.0, float(roi_expand_scale) - 1.0) / 2.0
+            tolerance_x += max(0.0, float(bbox[2] - bbox[0])) * expansion
+            tolerance_y += max(0.0, float(bbox[3] - bbox[1])) * expansion
     if (
-        (array[:, 0] < -tolerance).any()
-        or (array[:, 0] > original_width + tolerance).any()
-        or (array[:, 1] < -tolerance).any()
-        or (array[:, 1] > original_height + tolerance).any()
+        (array[:, 0] < -tolerance_x).any()
+        or (array[:, 0] > original_width + tolerance_x).any()
+        or (array[:, 1] < -tolerance_y).any()
+        or (array[:, 1] > original_height + tolerance_y).any()
     ):
-        raise ValueError("Restored polygon is outside the original image")
+        return []
 
     array[:, 0] = np.clip(array[:, 0], 0.0, float(original_width))
     array[:, 1] = np.clip(array[:, 1], 0.0, float(original_height))
@@ -101,6 +119,7 @@ class P2PFormerPredictor:
         from mmdet.apis import inference_detector
 
         captured: Dict[str, Any] = {}
+
         def capture_converter(
             model: Any,
             contours: Any,
@@ -148,10 +167,14 @@ class P2PFormerPredictor:
         polygons = captured["contours"][0]
         bboxes = captured["bboxes"][0]
         image_meta = captured["image_metas"][0]
+        roi_expand_scale = float(
+            getattr(self.model.line_head, "expand_scale", 1.0)
+        )
         if len(polygons) != len(bboxes):
             raise RuntimeError("P2PFormer returned misaligned polygons and boxes")
 
         predictions = []
+        invalid_polygon_count = 0
         for polygon, bbox in zip(polygons, bboxes):
             score = float(bbox[4])
             if not math.isfinite(score) or not 0.0 <= score <= 1.0:
@@ -159,14 +182,26 @@ class P2PFormerPredictor:
             if score < score_threshold:
                 continue
             points = restore_polygon_to_original(
-                polygon, image_meta, width, height
+                polygon,
+                image_meta,
+                width,
+                height,
+                bbox_xyxy=bbox[:4],
+                roi_expand_scale=roi_expand_scale,
             )
             if len(points) < 3:
+                invalid_polygon_count += 1
                 continue
             predictions.append(
                 PredictedPolygon(
                     points=points, score=score, score_cls=score
                 )
+            )
+        if invalid_polygon_count:
+            LOGGER.warning(
+                "Skipped %d invalid or out-of-bounds polygon(s) out of %d",
+                invalid_polygon_count,
+                len(polygons),
             )
         return predictions
 

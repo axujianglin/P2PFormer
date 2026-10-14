@@ -305,3 +305,38 @@ def test_restored_polygon_clips_only_small_rounding_error():
     )
     assert restored == [[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]]
 
+
+def test_restore_polygon_accepts_model_roi_expansion_at_image_edge():
+    metadata = {
+        "img_shape": (100, 100, 3),
+        "scale_factor": [1.0, 1.0, 1.0, 1.0],
+        "flip": False,
+    }
+    restored = restore_polygon_to_original(
+        [[-2.5, 10], [40, 10], [40, 50], [-2.5, 50]],
+        metadata,
+        100,
+        100,
+        bbox_xyxy=[0, 10, 40, 50],
+        roi_expand_scale=1.1,
+    )
+    assert restored == [[0.0, 10.0], [40.0, 10.0],
+                        [40.0, 50.0], [0.0, 50.0]]
+
+
+def test_restore_polygon_rejects_large_excursion_without_raising():
+    metadata = {
+        "img_shape": (100, 100, 3),
+        "scale_factor": [1.0, 1.0, 1.0, 1.0],
+        "flip": False,
+    }
+    restored = restore_polygon_to_original(
+        [[-30, 10], [40, 10], [40, 50], [-30, 50]],
+        metadata,
+        100,
+        100,
+        bbox_xyxy=[0, 10, 40, 50],
+        roi_expand_scale=1.1,
+    )
+    assert restored == []
+
