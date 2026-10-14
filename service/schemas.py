@@ -70,6 +70,7 @@ class InferenceSummary(BaseModel):
 
 
 class InferenceResponse(BaseModel):
+    success: bool
     protocol_version: str
     request_id: str
     image: ImageInfo

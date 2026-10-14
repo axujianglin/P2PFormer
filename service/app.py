@@ -360,6 +360,7 @@ def create_app(
             state.finish_job()
 
         return InferenceResponse(
+            success=True,
             protocol_version=settings.protocol_version,
             request_id=x_request_id,
             image=ImageInfo(

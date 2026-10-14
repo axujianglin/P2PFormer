@@ -199,6 +199,7 @@ def test_empty_prediction_is_success(settings):
     with TestClient(create_app(settings, MockPredictor())) as client:
         response = infer_request(client, image_bytes("PNG"))
     assert response.status_code == 200
+    assert response.json()["success"] is True
     assert response.json()["polygons"] == []
     assert response.json()["summary"]["polygon_count"] == 0
 
