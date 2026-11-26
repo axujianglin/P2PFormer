@@ -23,9 +23,10 @@ def reconcile(session, width, height, tiles, results, reinfer):
                 diagnostics.append({'reason': 'invalid_geometry', 'sources': [source]})
                 continue
             # Only internal tile edges indicate a potentially truncated building.
-            clipped = any((t.x > 0 and x <= 1) or (t.y > 0 and y <= 1) or
-                          (t.x + t.width < width and x >= t.width - 1) or
-                          (t.y + t.height < height and y >= t.height - 1)
+            margin = max(2, min(16, min(t.width, t.height) * .02))
+            clipped = any((t.x > 0 and x <= margin) or (t.y > 0 and y <= margin) or
+                          (t.x + t.width < width and x >= t.width - margin) or
+                          (t.y + t.height < height and y >= t.height - margin)
                           for x, y in p.points)
             records.append(dict(g=g, points=points, score=p.score, score_cls=p.score_cls,
                                 sources=[source], tile_ids=[tid], clipped=clipped))
@@ -63,35 +64,59 @@ def reconcile(session, width, height, tiles, results, reinfer):
         if not confirmed:
             union = unary_union([r['g'] for r in group])
             x0, y0, x1, y1 = union.bounds
-            pad = max(16, math.ceil(max(x1-x0, y1-y0) * .5))
-            roi = (max(0, math.floor(x0)-pad), max(0, math.floor(y0)-pad),
-                   min(width, math.ceil(x1)+pad), min(height, math.ceil(y1)+pad))
-            try:
+            attempts = []
+            seen_rois = set()
+            # A fragment's bounds do not establish the full building extent.
+            # Retry with increasing original-image context instead of treating
+            # one crop/zero detection as a definitive answer.
+            for scale in (.5, 1.0, 2.0):
+                pad = max(16, math.ceil(max(x1-x0, y1-y0) * scale))
+                roi = (max(0, math.floor(x0)-pad), max(0, math.floor(y0)-pad),
+                       min(width, math.ceil(x1)+pad), min(height, math.ceil(y1)+pad))
+                if roi in seen_rois:
+                    continue
+                seen_rois.add(roi)
+                try:
+                    predictions = list(reinfer(roi))
+                except Exception:
+                    attempts.append({'roi': list(roi), 'reason': 'reinference_exception'})
+                    continue
                 candidates = []
-                for p in reinfer(roi):
+                rejected = []
+                for p in predictions:
                     pts = [[x+roi[0], y+roi[1]] for x,y in p.points]
                     g = Polygon(pts)
+                    reason = None
                     if not g.is_valid or g.area <= 0:
-                        continue
-                    if g.intersection(union).area / union.area < .95:
-                        continue
-                    if g.area > union.area * 2 or g.intersection(union).area/g.area < .5:
-                        continue
-                    if any((roi[0]>0 and x<=roi[0]+1) or (roi[1]>0 and y<=roi[1]+1) or
-                           (roi[2]<width and x>=roi[2]-1) or (roi[3]<height and y>=roi[3]-1) for x,y in pts):
-                        continue
-                    # Never consume a neighboring detection outside this group.
-                    if any(g.intersection(r['g']).area / r['g'].area > .1
-                           for r in records if r not in group):
+                        reason = 'invalid_geometry'
+                    elif g.intersection(union).area / union.area < .95:
+                        reason = 'insufficient_source_coverage'
+                    elif any((roi[0]>0 and x<=roi[0]+2) or (roi[1]>0 and y<=roi[1]+2) or
+                             (roi[2]<width and x>=roi[2]-2) or (roi[3]<height and y>=roi[3]-2) for x,y in pts):
+                        reason = 'roi_boundary_truncation'
+                    elif any(g.intersection(r['g']).area / r['g'].area > .1
+                             for r in records if r not in group):
+                        reason = 'overlaps_external_detection'
+                    # Large recovery is allowed for edge fragments, but still
+                    # requires source coverage and no neighboring detection.
+                    elif g.area > union.area * (8 if any(r['clipped'] for r in group) else 2):
+                        reason = 'unsupported_area_growth'
+                    if reason:
+                        rejected.append(reason)
                         continue
                     candidates.append(dict(g=g, points=pts, score=p.score, score_cls=p.score_cls))
-                if len(candidates) != 1:
-                    raise ValueError('reinference_zero_or_ambiguous')
-                best = candidates[0]
-                confirmed = True
-                method = 'original_roi_reinference'
-            except Exception:
-                diagnostics.append({'reason': 'reinference_failed_or_ambiguous', 'sources': sources, 'roi': list(roi)})
+                if len(candidates) == 1:
+                    best = candidates[0]
+                    confirmed = True
+                    method = 'original_roi_reinference'
+                    break
+                attempts.append({'roi': list(roi), 'reason':
+                                 'zero_predictions' if not predictions else
+                                 'multiple_valid_candidates' if len(candidates)>1 else 'validation_rejected',
+                                 'rejected': sorted(set(rejected))})
+            if not confirmed:
+                diagnostics.append({'reason': 'reinference_failed_or_ambiguous',
+                                    'sources': sources, 'roi': list(roi), 'attempts': attempts})
         selected = [best] if confirmed else group
         for r in selected:
             provenance = sources if confirmed else r['sources']

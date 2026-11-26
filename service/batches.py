@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import time
 from typing import List
 
@@ -11,6 +12,8 @@ from pydantic import BaseModel, StrictInt, constr
 from starlette.concurrency import run_in_threadpool
 
 from .fusion import reconcile
+
+LOGGER = logging.getLogger("p2pformer.service.batches")
 
 
 class Tile(BaseModel):
@@ -85,8 +88,15 @@ def install_batches(app, state, settings, authorize, decode, build, Error):
         s['status'] = status if status != 'succeeded' else (
             'partial_failed' if s['failures'] or diagnostics else 'succeeded')
         s['snapshot'] = dict(**view(s), coordinate_space='original_image_pixel',
-                             polygons=polygons, diagnostics=diagnostics)
+                             polygons=polygons, diagnostics=diagnostics,
+                             collection_mode='replace_auto', fusion_version='2',
+                             pending_review_count=sum(p['review_status'] == 'pending_review' for p in polygons))
         s['snapshot']['final'] = True
+        LOGGER.info(
+            'Batch finalized session=%r fusion_version=2 status=%s tiles=%d/%d '
+            'final_polygons=%d pending_review=%d diagnostics=%d collection_mode=replace_auto',
+            m.session_id, s['status'], len(s['results']), m.tile_count, len(polygons),
+            s['snapshot']['pending_review_count'], len(diagnostics))
         s['images'].clear()
         s['original'] = None
 

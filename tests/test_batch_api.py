@@ -74,3 +74,39 @@ def test_model_failure_produces_partial_snapshot(settings):
               files={'image':('a.png',image_bytes('PNG'))})
         result=wait_result(c,'s')
         assert result['status']=='partial_failed' and 'a' in result['failures']
+
+def test_batch_roi_replaces_fragment_in_final_response(settings):
+    from service.predictor import PredictedPolygon
+
+    class Predictor:
+        calls = 0
+
+        def infer(self, pixels, threshold):
+            self.calls += 1
+            if self.calls == 1:
+                points = [[50,20],[80,20],[80,50],[50,50]]
+            else:
+                # First ROI is (34,4,96,66); recovered roof is (45,20)-(90,50).
+                assert pixels.shape[:2] == (62,62)
+                points = [[11,16],[56,16],[56,46],[11,46]]
+            return [PredictedPolygon(points=points,score=.9,score_cls=.9)]
+
+    predictor=Predictor()
+    with TestClient(create_app(settings,predictor)) as c:
+        manifest=dict(session_id='roi',width=120,height=100,tile_count=1,
+                      tiles=[dict(tile_id='a',x=0,y=0,width=80,height=100)])
+        r=c.post('/v1/auto/batches',headers={'X-API-Key':'test-secret'},
+                 data={'manifest':json.dumps(manifest)},
+                 files={'original':('original.png',image_bytes('PNG',(120,100)))})
+        assert r.status_code==200
+        c.put('/v1/auto/batches/roi/tiles/a',headers={'X-API-Key':'test-secret'},
+              files={'image':('a.png',image_bytes('PNG',(80,100)))})
+        result=wait_result(c,'roi')
+        assert result['status']=='succeeded'
+        assert result['collection_mode']=='replace_auto' and result['fusion_version']=='2'
+        assert result['pending_review_count']==0 and len(result['polygons'])==1
+        p=result['polygons'][0]
+        assert p['fusion_method']=='original_roi_reinference'
+        assert p['points']==[[45,20],[90,20],[90,50],[45,50]]
+        assert p['original_polygon_ids']==['a/building_0001']
+        assert predictor.calls==2

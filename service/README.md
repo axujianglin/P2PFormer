@@ -26,7 +26,7 @@ export P2PFORMER_DEVICE='cuda:0'
 export P2PFORMER_HOST='127.0.0.1'
 export P2PFORMER_PORT='8000'
 export P2PFORMER_MAX_UPLOAD_MB='64'
-python -m service.app
+python -m service
 ```
 
 An empty API key is rejected by default. It can only be enabled explicitly
@@ -68,3 +68,10 @@ metadata is intentionally ignored by this protocol.
 
 
 批次最终融合协议见 [BATCHES.md](BATCHES.md)。原有同步接口行为保持兼容。
+
+Recommended launcher: `python -m service`. It initializes the configured CUDA device
+before importing the HTTP application and native geometry/model dependencies. This
+preserves the startup order verified on Linux where late CUDA initialization crashed.
+`python -m service.app` and direct ASGI imports remain available, but bypass this
+early initialization. Use one process, without reload or multiple workers.
+Startup success must be followed by a real inference request to validate model operators.

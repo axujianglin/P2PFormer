@@ -71,3 +71,52 @@ def test_bbox_overlap_without_polygon_overlap_is_not_duplicate():
     b=NS(points=[[15,30],[15,22],[7,30]],id='p',score=.9,score_cls=.9)
     out,d=fuse({'a':[a],'b':[b]})
     assert len(out)==2 and not d
+
+def test_near_seam_inset_fragment_is_reinferred():
+    # Model stops 1.5px short of the seam, rather than exactly at x=80.
+    def re(roi):
+        return [rect(50-roi[0],20-roi[1],100-roi[0],50-roi[1])]
+    out,d=fuse({'a':[rect(50,20,78.5,50)]},re=re)
+    assert len(out)==1 and not d
+    assert out[0]['points'][1][0]==100
+    assert out[0]['fusion_method']=='original_roi_reinference'
+
+
+def test_fragment_can_recover_more_than_twice_its_area():
+    def re(roi):
+        # Bounds are inside the expanded ROI and source is fully covered.
+        return [rect(45-roi[0],15-roi[1],95-roi[0],60-roi[1])]
+    out,d=fuse({'a':[rect(65,20,80,50)]},re=re)
+    assert len(out)==1 and not d
+    assert out[0]['points'][0]==[45,15]
+
+
+def test_zero_first_crop_retries_with_more_context():
+    calls=[]
+    def re(roi):
+        calls.append(roi)
+        if len(calls)==1:
+            return []
+        return [rect(45-roi[0],20-roi[1],100-roi[0],50-roi[1])]
+    out,d=fuse({'a':[rect(50,20,80,50)]},re=re)
+    assert len(calls)==2 and calls[1][2]>calls[0][2]
+    assert len(out)==1 and not d
+
+
+def test_contained_fragment_without_edge_flag_requires_roi_validation():
+    # Neither detection is near a tile edge; score alone must not select the fragment.
+    tiles={'a':tile(0,120),'b':tile(0,120)}
+    def re(roi):
+        return [rect(30-roi[0],20-roi[1],70-roi[0],60-roi[1])]
+    out,d=fuse({'a':[rect(30,20,70,60,score=.8)],
+                'b':[rect(40,30,60,50,score=.99)]},tiles,re)
+    assert len(out)==1 and not d
+    assert out[0]['original_polygon_ids']==['a/p','b/p']
+    assert out[0]['fusion_method']=='original_roi_reinference'
+
+
+def test_failed_retries_include_traceable_reasons():
+    out,d=fuse({'a':[rect(50,20,80,50)]})
+    assert out[0]['review_status']=='pending_review'
+    assert d[0]['attempts']
+    assert all(a['reason']=='zero_predictions' for a in d[0]['attempts'])
