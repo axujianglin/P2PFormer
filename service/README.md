@@ -66,3 +66,5 @@ curl -sS -X POST \
 The response always uses original-image pixel coordinates. TIFF georeference
 metadata is intentionally ignored by this protocol.
 
+
+批次最终融合协议见 [BATCHES.md](BATCHES.md)。原有同步接口行为保持兼容。

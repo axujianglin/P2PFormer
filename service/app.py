@@ -413,6 +413,9 @@ def create_app(
             ),
         )
 
+    from .batches import install_batches
+    install_batches(app, state, settings, authorize, _decode_image, _build_polygons, ServiceError)
+
     return app
 
 
