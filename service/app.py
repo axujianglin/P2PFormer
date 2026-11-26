@@ -219,7 +219,10 @@ def create_app(
         elif can_load:
             try:
                 state.predictor = P2PFormerPredictor(settings)
-                await run_in_threadpool(state.predictor.load)
+                # Complete model/CUDA initialization on the startup thread.
+                # No requests are served until lifespan startup finishes.
+                # Keep request-time inference off the event loop as before.
+                state.predictor.load()
                 state.model_ready = True
             except Exception:
                 state.model_error = True

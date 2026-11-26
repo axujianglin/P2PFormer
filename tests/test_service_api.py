@@ -366,3 +366,21 @@ def test_restore_polygon_rejects_large_excursion_without_raising():
     )
     assert restored == []
 
+
+
+def test_model_load_runs_on_lifespan_event_loop(settings, monkeypatch):
+    import asyncio
+
+    class StartupPredictor:
+        def __init__(self, settings):
+            pass
+
+        def load(self):
+            # A worker thread has no running event loop. Initialization must
+            # finish on the lifespan thread before the service reports ready.
+            asyncio.get_running_loop()
+
+    monkeypatch.setattr("service.app.P2PFormerPredictor", StartupPredictor)
+    monkeypatch.setattr("service.app.cuda_is_available", lambda: False)
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/health").json()["status"] == "ready"
